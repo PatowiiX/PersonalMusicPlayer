@@ -41,6 +41,22 @@ import kotlin.random.Random
 
 val DefaultAccent = Color(0xFF3A3A3A)
 
+/**
+ * Elige el color más llamativo de la carátula y lo hace vivo: sube la saturación y mantiene un brillo
+ * medio, para que el tinte se note aunque el álbum sea apagado u oscuro.
+ */
+private fun vividAccent(p: Palette): Color? {
+    val sw = p.vibrantSwatch ?: p.lightVibrantSwatch ?: p.darkVibrantSwatch
+        ?: p.mutedSwatch ?: p.dominantSwatch ?: return null
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(sw.rgb, hsv)
+    // Gris casi sin color: se respeta (no inventar un tono), solo se aclara un poco
+    if (hsv[1] < 0.08f) { hsv[2] = hsv[2].coerceIn(0.35f, 0.75f); return Color(android.graphics.Color.HSVToColor(hsv)) }
+    hsv[1] = hsv[1].coerceIn(0.55f, 1f)
+    hsv[2] = hsv[2].coerceIn(0.55f, 0.95f)
+    return Color(android.graphics.Color.HSVToColor(hsv))
+}
+
 /** Función suelta para poder armar los MediaItem fuera del hilo principal (listas grandes). */
 private fun mediaItemOf(s: Song): MediaItem =
     MediaItem.Builder().setMediaId(s.id.toString()).setUri(s.uri)
@@ -62,6 +78,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val entries = dao.entries()
     val excluded = profile.excluded.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     val vinylMode = profile.vinylMode.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+    val coverShape = profile.coverShape.stateIn(viewModelScope, SharingStarted.Eagerly, "auto")
+    val colorMode = profile.colorMode.stateIn(viewModelScope, SharingStarted.Eagerly, "dynamic")
 
     val library: StateFlow<List<Song>> = combine(allSongs, excluded) { all, ex -> all.filter { it.folder !in ex } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -292,6 +310,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleFavorite(id: Long) { viewModelScope.launch { profile.toggleFavorite(id) } }
     fun setStyle(s: String) { viewModelScope.launch { profile.saveStyle(s) } }
     fun setVinyl(i: Int) { viewModelScope.launch { profile.saveVinyl(i) } }
+    fun setCoverShape(s: String) { viewModelScope.launch { profile.saveCoverShape(s) } }
+    fun setColorMode(s: String) { viewModelScope.launch { profile.saveColorMode(s) } }
+    fun saveAlias(n: String) { viewModelScope.launch { profile.saveName(n) } }
+    fun savePhoto(uri: android.net.Uri) { viewModelScope.launch { profile.savePhoto(uri) } }
+    fun removePhoto() { viewModelScope.launch { profile.removePhoto() } }
     fun saveLastRoute(type: String, value: String) {
         viewModelScope.launch { profile.saveLastRoute(type, value) }
     }
@@ -391,15 +414,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             delay(120)
             val bmp = withContext(Dispatchers.IO) {
                 runCatching {
-                    ctx.contentResolver.loadThumbnail(s.uri, Size(1024, 1024), null)
+                    ctx.contentResolver.loadThumbnail(s.uri, Size(768, 768), null)
                         .let { if (it.config == Bitmap.Config.HARDWARE) it.copy(Bitmap.Config.ARGB_8888, false) else it }
                 }.getOrNull()
             }
             art.value = bmp
             accent.value = bmp?.let {
                 withContext(Dispatchers.Default) {
-                    val p = Palette.from(it).generate()
-                    (p.vibrantSwatch ?: p.dominantSwatch)?.rgb?.let { rgb -> Color(rgb) }
+                    vividAccent(Palette.from(it).maximumColorCount(24).resizeBitmapArea(100 * 100).generate())
                 }
             } ?: DefaultAccent
             quality.value = qualityFor(s)

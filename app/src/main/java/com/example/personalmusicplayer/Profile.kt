@@ -1,6 +1,8 @@
 package com.example.personalmusicplayer
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
 import android.net.Uri
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -11,9 +13,11 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.max
 
 private val Context.ds by preferencesDataStore("profile")
 
@@ -29,6 +33,8 @@ class ProfileStore(private val ctx: Context) {
     private val LAST_SONG = longPreferencesKey("last_song_id")
     private val LAST_POS = longPreferencesKey("last_position_ms")
     private val FAV = stringSetPreferencesKey("favorites")
+    private val COVER = stringPreferencesKey("cover_shape")
+    private val COLOR = stringPreferencesKey("color_mode")
 
     val name: Flow<String> = ctx.ds.data.map { it[NAME] ?: "" }
     val photo: Flow<String?> = ctx.ds.data.map { it[PHOTO] }
@@ -42,11 +48,17 @@ class ProfileStore(private val ctx: Context) {
     }
     val lastSongId: Flow<Long> = ctx.ds.data.map { it[LAST_SONG] ?: -1L }
     val lastPosition: Flow<Long> = ctx.ds.data.map { it[LAST_POS] ?: 0L }
+    /** "auto" = según el tema (como estaba), "round" = redondeadas, "square" = cuadradas. */
+    val coverShape: Flow<String> = ctx.ds.data.map { it[COVER] ?: "auto" }
+    /** "dynamic" = el color sigue a la carátula, "black" = negro total (tema Clásico). */
+    val colorMode: Flow<String> = ctx.ds.data.map { it[COLOR] ?: "dynamic" }
     val favorites: Flow<Set<Long>> = ctx.ds.data.map { p -> (p[FAV] ?: emptySet()).mapNotNull { it.toLongOrNull() }.toSet() }
 
     suspend fun saveName(n: String) { ctx.ds.edit { it[NAME] = n.trim() } }
     suspend fun saveVinyl(i: Int) { ctx.ds.edit { it[VINYL] = i } }
     suspend fun saveStyle(s: String) { ctx.ds.edit { it[STYLE] = s } }
+    suspend fun saveCoverShape(s: String) { ctx.ds.edit { it[COVER] = s } }
+    suspend fun saveColorMode(s: String) { ctx.ds.edit { it[COLOR] = s } }
     suspend fun saveShuffle(b: Boolean) { ctx.ds.edit { it[SHUF] = b } }
     suspend fun saveLastRoute(type: String, value: String) {
         ctx.ds.edit { it[LAST_TYPE] = type; it[LAST_VALUE] = value }
@@ -71,11 +83,36 @@ class ProfileStore(private val ctx: Context) {
         }
     }
 
+    /**
+     * Guarda la foto de cuenta reducida (máx. 768 px) y respetando la orientación EXIF.
+     * Antes se copiaba el archivo original completo (varios MB) y se decodificaba entero en cada Avatar.
+     */
     suspend fun savePhoto(uri: Uri) {
         val f = File(ctx.filesDir, "profile_${System.currentTimeMillis()}.jpg")
-        withContext(Dispatchers.IO) {
-            ctx.contentResolver.openInputStream(uri)?.use { i -> f.outputStream().use { o -> i.copyTo(o) } }
+        val ok = withContext(Dispatchers.IO) {
+            runCatching {
+                val src = ImageDecoder.createSource(ctx.contentResolver, uri)
+                val bmp = ImageDecoder.decodeBitmap(src) { dec, info, _ ->
+                    dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    val big = max(info.size.width, info.size.height)
+                    if (big > 768) {
+                        val k = 768f / big
+                        dec.setTargetSize((info.size.width * k).toInt().coerceAtLeast(1), (info.size.height * k).toInt().coerceAtLeast(1))
+                    }
+                }
+                f.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+                true
+            }.getOrDefault(false)
         }
+        if (!ok) { f.delete(); return }
+        val old = ctx.ds.data.first()[PHOTO]
         ctx.ds.edit { it[PHOTO] = f.absolutePath }
+        withContext(Dispatchers.IO) { old?.let { File(it).delete() } }
+    }
+
+    suspend fun removePhoto() {
+        val old = ctx.ds.data.first()[PHOTO]
+        ctx.ds.edit { it.remove(PHOTO) }
+        withContext(Dispatchers.IO) { old?.let { File(it).delete() } }
     }
 }

@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -80,6 +81,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -99,74 +101,80 @@ import kotlin.math.min
 import kotlin.math.sin
 
 // ============================================================ XMB (estilo PS3, negro)
-private class XItem(val label: String, val icon: ImageVector, val key: String = label, val onClick: () -> Unit)
-private class XCat(val label: String, val icon: ImageVector, val items: List<XItem>)
+private class XItem(
+    val label: String, val icon: ImageVector, val key: String = label,
+    val song: Song? = null, val sub: String? = null, val onClick: () -> Unit
+)
+/** Una sección del menú: lista corta de accesos [items], o bien canciones/álbumes con carátula. */
+private class XCat(
+    val label: String, val icon: ImageVector, val items: List<XItem> = emptyList(),
+    val songs: List<Song>? = null, val albums: List<AlbumItem>? = null
+)
 
 @Composable
 fun XmbHome(vm: PlayerViewModel, nav: Nav, onMenu: () -> Unit) {
+    val lib by vm.library.collectAsState()
     val pls by vm.playlists.collectAsState(emptyList())
+    val ent by vm.entries.collectAsState(emptyList())
     val scope = rememberCoroutineScope()
-    val cats = remember(pls, nav) {
+    val songsSorted = remember(lib) { lib.sortedBy { norm(it.title) } }
+    val albums = remember(lib) { albumsOf(lib) }
+    val byId = remember(lib) { lib.associateBy { it.id } }
+
+    val cats = remember(pls, ent, songsSorted, albums, byId, nav) {
+        val firstByPl = ent.groupBy { it.playlistId }
         listOf(
-            XCat("Música", Icons.Default.MusicNote, listOf(
+            XCat("Música", Icons.Default.MusicNote, items = listOf(
                 XItem("Canciones", Icons.Default.MusicNote) { nav.push(Route("songs")) },
                 XItem("Favoritos", Icons.Default.Favorite) { nav.push(Route("favorites")) },
                 XItem("Álbumes", Icons.Default.Album) { nav.push(Route("albums")) },
                 XItem("Artistas", Icons.Default.Mic) { nav.push(Route("artists")) },
                 XItem("Géneros", Icons.Default.Category) { nav.push(Route("genres")) },
-                XItem("Carpetas", Icons.Default.Folder) { nav.push(Route("folders")) }
+                XItem("Carpetas", Icons.Default.Folder) { nav.push(Route("folders")) },
+                XItem("Reproducido recientemente", Icons.Default.History) { nav.push(Route("history")) }
             )),
+            XCat("Canciones", Icons.Default.LibraryMusic, songs = songsSorted),
+            XCat("Álbumes", Icons.Default.Album, albums = albums),
             XCat("Playlists", Icons.Default.QueueMusic,
                 if (pls.isEmpty()) listOf(XItem("Aún no tienes playlists", Icons.Default.Info) {})
-                else pls.map { p -> XItem(p.name, Icons.Default.QueueMusic, key = "pl${p.id}") { nav.push(Route("playlist", p.id.toString())) } }),
+                else pls.map { p ->
+                    val n = firstByPl[p.id]?.size ?: 0
+                    XItem(p.name, Icons.Default.QueueMusic, key = "pl${p.id}",
+                        song = firstByPl[p.id]?.firstOrNull()?.let { byId[it.songId] },
+                        sub = "$n canciones") { nav.push(Route("playlist", p.id.toString())) }
+                }),
             XCat("Buscar", Icons.Default.Search, listOf(XItem("Buscar en tu biblioteca", Icons.Default.Search) { nav.push(Route("search")) })),
             XCat("Estadísticas", Icons.Default.BarChart, listOf(XItem("Ver tus estadísticas", Icons.Default.BarChart) { nav.push(Route("stats")) })),
             XCat("Ajustes", Icons.Default.Settings, listOf(
                 XItem("Configuración", Icons.Default.Settings) { nav.push(Route("settings")) },
-                XItem("Perfil", Icons.Default.Person) { nav.push(Route("profile")) }
+                XItem("Mi cuenta", Icons.Default.Person) { nav.push(Route("profile")) }
             ))
         )
     }
     val pager = rememberPagerState(pageCount = { cats.size })
-    val screenW = LocalConfiguration.current.screenWidthDp
-    val phase by rememberInfiniteTransition(label = "wave").animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(14000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "p"
-    )
+    val iconSpacing = 96.dp
 
-    Box(Modifier.fillMaxSize()) {
-        Canvas(Modifier.fillMaxSize()) {
-            for (k in 0..2) {
-                val base = size.height * (0.38f + 0.13f * k)
-                val path = Path().apply {
-                    moveTo(0f, size.height); lineTo(0f, base)
-                    var x = 0f
-                    while (x <= size.width) {
-                        lineTo(x, base + sin(x / size.width * 2f * PI.toFloat() * (1f + k * 0.3f) + phase + k) * size.height * 0.035f)
-                        x += 14f
-                    }
-                    lineTo(size.width, size.height); close()
-                }
-                drawPath(path, Color.White.copy(alpha = .035f + .02f * k))
-            }
-        }
-        Column(Modifier.fillMaxSize()) {
-            Header(vm, nav, "Personal Music Player", null, onMenu)
-            Spacer(Modifier.height(18.dp))
-            HorizontalPager(pager, Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = ((screenW - 96) / 2).dp),
-                pageSize = PageSize.Fixed(96.dp)) { page ->
-                val c = cats[page]
-                Column(Modifier.fillMaxWidth().graphicsLayer {
-                    val f = min(abs((pager.currentPage - page) + pager.currentPageOffsetFraction), 1f)
-                    val s = 1.2f - .5f * f; scaleX = s; scaleY = s; alpha = 1f - .55f * f
-                }.clickable { scope.launch { pager.animateScrollToPage(page) } },
-                    horizontalAlignment = Alignment.CenterHorizontally) {
+    // El fondo de olas ya lo dibuja MainScaffold: antes se dibujaba dos veces.
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        Header(vm, nav, "Personal Music Player", null, onMenu)
+        Spacer(Modifier.height(18.dp))
+
+        // Tira de iconos: sigue al dedo mientras se desliza el contenido (se lee en la capa gráfica, sin recomponer).
+        Box(Modifier.fillMaxWidth().height(92.dp)) {
+            cats.forEachIndexed { i, c ->
+                Column(
+                    Modifier.align(Alignment.TopCenter).width(iconSpacing)
+                        .graphicsLayer {
+                            val d = i - (pager.currentPage + pager.currentPageOffsetFraction)
+                            translationX = d * iconSpacing.toPx()
+                            val f = min(abs(d), 1f)
+                            val sc = 1.2f - .5f * f
+                            scaleX = sc; scaleY = sc
+                            alpha = if (abs(d) > 4f) 0f else 1f - .55f * f
+                        }
+                        .clickable { scope.launch { pager.animateScrollToPage(i) } },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                     Box(Modifier.size(64.dp).clip(CircleShape)
                         .background(Brush.radialGradient(listOf(Color.White.copy(.3f), Color.White.copy(.05f)))),
                         contentAlignment = Alignment.Center) {
@@ -176,22 +184,59 @@ fun XmbHome(vm: PlayerViewModel, nav: Nav, onMenu: () -> Unit) {
                     Text(c.label, color = Color.White, fontSize = 12.sp, maxLines = 1)
                 }
             }
-            Spacer(Modifier.height(26.dp))
-            Crossfade(pager.currentPage, label = "xmbItems") { idx ->
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 28.dp)) {
-                    items(cats[idx.coerceIn(0, cats.lastIndex)].items, key = { it.key }) { it ->
-                        Row(Modifier.fillMaxWidth().clickable { it.onClick() }.padding(vertical = 13.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(44.dp).clip(CircleShape).background(Color.White.copy(.1f)),
-                                contentAlignment = Alignment.Center) {
-                                Icon(it.icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
-                            }
-                            Spacer(Modifier.width(16.dp))
-                            Text(it.label, color = Color.White, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.height(10.dp))
+
+        // Contenido: deslizar el dedo en cualquier parte cambia de sección
+        HorizontalPager(pager, Modifier.fillMaxSize()) { page ->
+            val c = cats[page]
+            LazyColumn(
+                Modifier.fillMaxSize().graphicsLayer {
+                    val f = min(abs((pager.currentPage - page) + pager.currentPageOffsetFraction), 1f)
+                    alpha = 1f - .6f * f
+                },
+                state = nav.listState("xmb:$page"),
+                contentPadding = PaddingValues(bottom = 16.dp)
+            ) {
+                val sl = c.songs
+                val al = c.albums
+                when {
+                    sl != null -> itemsIndexed(sl, key = { _, s -> "s${s.id}" }) { i, s ->
+                        XmbMediaRow(s, Icons.Default.MusicNote, s.title, "${s.artist} · ${s.album}") { vm.play(sl, i) }
+                    }
+                    al != null -> items(al, key = { "a${it.id}" }) { a ->
+                        XmbMediaRow(a.first, Icons.Default.Album, a.name, "${a.artist} · ${a.count} canciones") {
+                            nav.push(Route("album", a.id.toString()))
                         }
+                    }
+                    else -> items(c.items, key = { it.key }) { it ->
+                        XmbMediaRow(it.song, it.icon, it.label, it.sub, it.onClick)
                     }
                 }
             }
+        }
+    }
+}
+
+/** Fila del XMB: carátula (si hay) o icono en círculo, título y subtítulo. */
+@Composable
+private fun XmbMediaRow(song: Song?, icon: ImageVector, title: String, subtitle: String?, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 24.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        if (song != null) {
+            Thumb(song, 56, RoundedCornerShape(4.dp), px = 220)
+        } else {
+            Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(44.dp).clip(CircleShape).background(Color.White.copy(.1f)), contentAlignment = Alignment.Center) {
+                    Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                }
+            }
+        }
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Color.White, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (subtitle != null)
+                Text(subtitle, color = Color.White.copy(.55f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -200,6 +245,7 @@ fun XmbHome(vm: PlayerViewModel, nav: Nav, onMenu: () -> Unit) {
 @Composable
 private fun CoverWithReflection(a: AlbumItem, size: Dp, onClick: () -> Unit) {
     val b by rememberThumb(a.first, 500)
+    val sh = coverShape(RectangleShape, size.value)
     Column(
         Modifier
             .width(size)
@@ -209,8 +255,9 @@ private fun CoverWithReflection(a: AlbumItem, size: Dp, onClick: () -> Unit) {
         Box(
             Modifier
                 .size(size)
+                .clip(sh)
                 .background(Color(0xFF222222))
-                .border(1.dp, Color.White.copy(.15f))
+                .border(1.dp, Color.White.copy(.15f), sh)
         ) {
             b?.let {
                 Image(
@@ -504,17 +551,17 @@ fun SettingsScreen(vm: PlayerViewModel, nav: Nav, onMenu: () -> Unit) {
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
             StyleHeader(vm, nav, "Configuración", null, onMenu, search = false)
             when (style) {
-                STYLE_XMB -> XmbSettings(style, all.size, status, pick, scan)
-                STYLE_VISTA -> VistaSettings(style, all.size, status, pick, scan)
-                STYLE_ITUNES -> ITunesSettings(style, all.size, status, pick, scan)
-                else -> ClassicSettings(style, all.size, status, pick, scan)
+                STYLE_XMB -> XmbSettings(vm, style, all.size, status, pick, scan)
+                STYLE_VISTA -> VistaSettings(vm, style, all.size, status, pick, scan)
+                STYLE_ITUNES -> ITunesSettings(vm, style, all.size, status, pick, scan)
+                else -> ClassicSettings(vm, style, all.size, status, pick, scan)
             }
         }
     }
 }
 
 @Composable
-private fun ClassicSettings(current: String, count: Int, status: String, onPick: (String) -> Unit, onScan: () -> Unit) {
+private fun ClassicSettings(vm: PlayerViewModel, current: String, count: Int, status: String, onPick: (String) -> Unit, onScan: () -> Unit) {
     val cardShape = RoundedCornerShape(20.dp)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
@@ -540,6 +587,7 @@ private fun ClassicSettings(current: String, count: Int, status: String, onPick:
                 }
             }
         }
+        item { AppearanceCard(vm, current) }
         item {
             Column(Modifier.fillMaxWidth().clip(cardShape).background(Color(0xFF141418))
                 .border(1.dp, Color.White.copy(.07f), cardShape).padding(18.dp)) {
@@ -561,7 +609,7 @@ private fun ClassicSettings(current: String, count: Int, status: String, onPick:
 }
 
 @Composable
-private fun XmbSettings(current: String, count: Int, status: String, onPick: (String) -> Unit, onScan: () -> Unit) {
+private fun XmbSettings(vm: PlayerViewModel, current: String, count: Int, status: String, onPick: (String) -> Unit, onScan: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp)) {
         item {
             Text("Estilo de la app", color = Color.White.copy(.6f), fontSize = 13.sp,
@@ -571,6 +619,7 @@ private fun XmbSettings(current: String, count: Int, status: String, onPick: (St
             val o = STYLE_OPTS[i]
             XmbSettingRow(o.icon, o.title, o.desc, if (current == o.id) "✓ activo" else null) { onPick(o.id) }
         }
+        item { AppearanceCard(vm, current) }
         item {
             Text("Biblioteca", color = Color.White.copy(.6f), fontSize = 13.sp,
                 modifier = Modifier.padding(start = 28.dp, end = 28.dp, top = 22.dp, bottom = 8.dp))
@@ -604,7 +653,7 @@ private fun XmbSettingRow(icon: ImageVector, title: String, subtitle: String, tr
 }
 
 @Composable
-private fun ITunesSettings(current: String, count: Int, status: String, onPick: (String) -> Unit, onScan: () -> Unit) {
+private fun ITunesSettings(vm: PlayerViewModel, current: String, count: Int, status: String, onPick: (String) -> Unit, onScan: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Color(0xFF141414))
@@ -631,6 +680,7 @@ private fun ITunesSettings(current: String, count: Int, status: String, onPick: 
                 }
             }
         }
+        item { AppearanceCard(vm, current) }
         item {
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Color(0xFF141414))
                 .border(1.dp, Color.White.copy(.1f), RoundedCornerShape(6.dp))) {
@@ -655,7 +705,7 @@ private fun ITunesSettings(current: String, count: Int, status: String, onPick: 
 }
 
 @Composable
-private fun VistaSettings(current: String, count: Int, status: String, onPick: (String) -> Unit, onScan: () -> Unit) {
+private fun VistaSettings(vm: PlayerViewModel, current: String, count: Int, status: String, onPick: (String) -> Unit, onScan: () -> Unit) {
     val panel = RoundedCornerShape(8.dp)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
@@ -680,6 +730,7 @@ private fun VistaSettings(current: String, count: Int, status: String, onPick: (
                 }
             }
         }
+        item { AppearanceCard(vm, current) }
         item {
             Column(Modifier.fillMaxWidth().clip(panel).background(VistaGlassBrush)
                 .border(1.dp, Color.White.copy(.25f), panel).padding(14.dp)) {
@@ -697,5 +748,68 @@ private fun VistaSettings(current: String, count: Int, status: String, onPick: (
                     color = Color.White.copy(.5f), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
             }
         }
+    }
+}
+
+// ------------------------------------------------------------ Apariencia (carátulas y color)
+@Composable
+private fun AppearanceCard(vm: PlayerViewModel, style: String) {
+    val cover by vm.coverShape.collectAsState()
+    val colorMode by vm.colorMode.collectAsState()
+    val accent = when (style) { STYLE_VISTA -> VistaAccent; STYLE_CLASSIC -> Color.White; else -> ITunesBlue }
+    val shape = when (style) { STYLE_CLASSIC -> RoundedCornerShape(20.dp); STYLE_XMB -> RoundedCornerShape(0.dp); else -> RoundedCornerShape(8.dp) }
+    val container = when (style) {
+        STYLE_VISTA -> Modifier.background(VistaGlassBrush)
+        STYLE_XMB -> Modifier.background(Color.Black.copy(.35f))
+        STYLE_ITUNES -> Modifier.background(Color(0xFF141414))
+        else -> Modifier.background(classicCardColor())
+    }
+    Column(
+        Modifier.fillMaxWidth()
+            .padding(top = if (style == STYLE_XMB) 14.dp else 0.dp)
+            .clip(shape).then(container)
+            .border(1.dp, Color.White.copy(.12f), shape).padding(vertical = 8.dp)
+    ) {
+        Text("Carátulas", color = Color.White.copy(.65f), fontSize = 12.sp, fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(start = 18.dp, top = 8.dp, bottom = 4.dp))
+        ChoiceRow("Según el tema", "Cada tema usa su forma original", cover == COVER_AUTO, accent,
+            RoundedCornerShape(4.dp)) { vm.setCoverShape(COVER_AUTO) }
+        ChoiceRow("Redondeadas", "Esquinas suaves en todos los temas", cover == COVER_ROUND, accent,
+            RoundedCornerShape(11.dp)) { vm.setCoverShape(COVER_ROUND) }
+        ChoiceRow("Cuadradas", "Esquinas rectas en todos los temas", cover == COVER_SQUARE, accent,
+            RectangleShape) { vm.setCoverShape(COVER_SQUARE) }
+
+        HorizontalDivider(Modifier.padding(horizontal = 18.dp, vertical = 8.dp), color = Color.White.copy(.1f))
+        Text("Color (tema Clásico)", color = Color.White.copy(.65f), fontSize = 12.sp, fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(start = 18.dp, bottom = 4.dp))
+        ChoiceRow("Cambia con la carátula", "El fondo toma el color del álbum que suena", colorMode == COLOR_DYNAMIC, accent,
+            CircleShape, swatch = Brush.sweepGradient(listOf(Color(0xFFE24A6A), Color(0xFFF5B83D), Color(0xFF3DAEE9), Color(0xFFE24A6A)))) {
+            vm.setColorMode(COLOR_DYNAMIC)
+        }
+        ChoiceRow("Negro total", "Fondo negro puro, sin tintes", colorMode == COLOR_BLACK, accent,
+            CircleShape, swatch = Brush.verticalGradient(listOf(Color.Black, Color.Black))) { vm.setColorMode(COLOR_BLACK) }
+        if (style != STYLE_CLASSIC)
+            Text("Se aplica cuando usas el tema Clásico.", color = Color.White.copy(.45f), fontSize = 11.sp,
+                modifier = Modifier.padding(start = 18.dp, top = 2.dp, bottom = 4.dp))
+    }
+}
+
+@Composable
+private fun ChoiceRow(
+    title: String, desc: String, selected: Boolean, accent: Color, previewShape: androidx.compose.ui.graphics.Shape,
+    swatch: Brush? = null, onClick: () -> Unit
+) {
+    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 18.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(34.dp).clip(previewShape)
+            .background(swatch ?: Brush.linearGradient(listOf(Color(0xFF8E8E93), Color(0xFF48484A))))
+            .border(1.dp, Color.White.copy(.35f), previewShape))
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(desc, color = Color.White.copy(.55f), fontSize = 12.sp)
+        }
+        Icon(if (selected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked, null,
+            tint = if (selected) accent else Color.White.copy(.4f))
     }
 }

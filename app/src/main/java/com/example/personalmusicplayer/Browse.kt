@@ -82,11 +82,12 @@ fun BrowseHost(vm: PlayerViewModel, nav: Nav, onMenu: () -> Unit) {
         "profile" -> {
             StyleScreenBackground(Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize().statusBarsPadding()) {
-                    StyleHeader(vm, nav, "Perfil", null, onMenu, search = false)
-                    ProfileScreen(vm, first = false)
+                    StyleHeader(vm, nav, "Mi cuenta", null, onMenu, search = false)
+                    AccountScreen(vm)
                 }
             }
         }
+        "history" -> HistoryScreen(vm, nav, onMenu)
         "search" -> SearchScreen(vm, nav, onMenu, lib)
         "album" -> AlbumDetail(vm, nav, onMenu, lib.filter { it.albumId.toString() == r.value })
         "artist" -> ArtistDetail(vm, nav, onMenu, r.value, lib.filter { it.artist == r.value })
@@ -144,7 +145,7 @@ fun Header(vm: PlayerViewModel, nav: Nav, title: String, subtitle: String?, onMe
 
 /** Caché en memoria (24 MB): al hacer scroll las carátulas ya vistas no se vuelven a decodificar. */
 private object ThumbCache {
-    private val cache = object : android.util.LruCache<String, Bitmap>(24 * 1024 * 1024) {
+    private val cache = object : android.util.LruCache<String, Bitmap>(maxOf(24 * 1024 * 1024L, Runtime.getRuntime().maxMemory() / 8).toInt()) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
     fun get(key: String): Bitmap? = cache.get(key)
@@ -167,6 +168,7 @@ fun rememberThumb(song: Song?, px: Int): State<Bitmap?> {
 @Composable
 fun Thumb(song: Song?, dp: Int, shape: Shape = RoundedCornerShape(3.dp), px: Int = 160) {
     val b by rememberThumb(song, px)
+    val shape = coverShape(shape, dp.toFloat())
     Box(Modifier.size(dp.dp).clip(shape).background(Color(0xFF222222)).border(1.dp, Color.Black.copy(.6f), shape),
         contentAlignment = Alignment.Center) {
         val bm = b
@@ -664,10 +666,11 @@ fun AlbumDetail(vm: PlayerViewModel, nav: Nav, onMenu: () -> Unit, raw: List<Son
             LazyColumn(Modifier.fillMaxSize()) {
                 item {
                     Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.Bottom) {
+                        val coverSh = coverShape(if (style == STYLE_CLASSIC) RoundedCornerShape(20.dp) else RoundedCornerShape(6.dp), 160f)
                         Box(Modifier.size(160.dp)
-                            .clip(if (style == STYLE_CLASSIC) RoundedCornerShape(20.dp) else RoundedCornerShape(6.dp))
+                            .clip(coverSh)
                             .background(Color(0xFF222222))
-                            .border(1.dp, Color.Black.copy(.7f), if (style == STYLE_CLASSIC) RoundedCornerShape(20.dp) else RoundedCornerShape(6.dp))) {
+                            .border(1.dp, Color.Black.copy(.7f), coverSh)) {
                             cover?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
                         }
                         Spacer(Modifier.width(16.dp))

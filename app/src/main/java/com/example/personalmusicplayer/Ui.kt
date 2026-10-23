@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -103,9 +104,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -132,6 +137,31 @@ val LocalStyle = compositionLocalOf { STYLE_CLASSIC }
 
 // ⭐ NUEVO: acento global para que Clásico pueda teñir su fondo
 val LocalAccent = compositionLocalOf { Color(0xFF3A3A3A) }
+
+// Preferencias de apariencia (Configuración)
+const val COVER_AUTO = "auto"       // como estaba: cada tema usa su propia forma
+const val COVER_ROUND = "round"     // carátulas redondeadas en todos los temas
+const val COVER_SQUARE = "square"   // carátulas cuadradas en todos los temas
+const val COLOR_DYNAMIC = "dynamic" // el color cambia según la carátula
+const val COLOR_BLACK = "black"     // negro total (tema Clásico/minimalista)
+
+val LocalCoverShape = compositionLocalOf { COVER_AUTO }
+
+/** Forma final de una carátula según la preferencia del usuario. [base] es la forma original del tema. */
+@Composable
+fun coverShape(base: Shape, sizeDp: Float): Shape = when (LocalCoverShape.current) {
+    COVER_SQUARE -> RectangleShape
+    COVER_ROUND -> if (base === CircleShape) CircleShape else RoundedCornerShape((sizeDp * 0.22f).dp)
+    else -> base
+}
+
+/** Fondo de las tarjetas del tema Clásico: toma un toque del color del álbum (negro total = sin tinte). */
+@Composable
+fun classicCardColor(): Color {
+    val a = LocalAccent.current
+    val base = Color(0xFF141418)
+    return if (a == Color.Black) base else lerp(base, a, 0.30f)
+}
 
 // iTunes 2007
 val ITunesMetalBrush = Brush.verticalGradient(listOf(Color(0xFF5C5C5C), Color(0xFF343434), Color(0xFF1A1A1A)))
@@ -272,7 +302,11 @@ fun MainScaffold(vm: PlayerViewModel) {
     val req by vm.requestPlayerTab.collectAsState()
     val current by vm.current.collectAsState()
     val style by vm.uiStyle.collectAsState()
-    val accent by vm.accent.collectAsState()   // ⭐ NUEVO
+    val accent by vm.accent.collectAsState()
+    val coverMode by vm.coverShape.collectAsState()
+    val colorMode by vm.colorMode.collectAsState()
+    // Negro total solo aplica al tema minimalista (Clásico); los demás temas conservan su color.
+    val effAccent = if (style == STYLE_CLASSIC && colorMode == COLOR_BLACK) Color.Black else accent
     val styleRoot = Route(when (style) {
         STYLE_XMB -> STYLE_XMB; STYLE_ITUNES -> STYLE_ITUNES; STYLE_VISTA -> STYLE_VISTA; else -> "songs"
     })
@@ -310,7 +344,8 @@ fun MainScaffold(vm: PlayerViewModel) {
     // ⭐ NUEVO: LocalAccent provisto junto con LocalStyle
     CompositionLocalProvider(
         LocalStyle provides style,
-        LocalAccent provides accent
+        LocalAccent provides effAccent,
+        LocalCoverShape provides coverMode
     ) {
         Box(if (isVista) bgMod.background(VistaBgBrush) else bgMod.background(Color.Black)) {
             if (isXmb) WaveBackground(Modifier.fillMaxSize())
@@ -407,7 +442,7 @@ private fun StyleDock(style: String, selected: Int, onClick: (Int) -> Unit) {
         STYLE_CLASSIC -> {
             Row(
                 Modifier.fillMaxWidth().background(color = Color.Black)
-                    .border(width = 1.dp, color = Color.White.copy(alpha = 0.08f))
+                    .border(width = 1.dp, color = LocalAccent.current.let { if (it == Color.Black) Color.White.copy(alpha = 0.08f) else it.copy(alpha = 0.45f) })
                     .navigationBarsPadding().padding(vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
@@ -480,7 +515,7 @@ fun MiniPlayer(vm: PlayerViewModel, onOpen: () -> Unit) {
         STYLE_VISTA -> Brush.verticalGradient(listOf(Color(0xCC0A1E33), Color(0xCC071523)))
         STYLE_XMB -> Brush.verticalGradient(listOf(Color(0x99000000), Color(0x99000000)))
         STYLE_ITUNES -> ITunesLCDBrush
-        else -> Brush.verticalGradient(listOf(Color(0xFF151515), Color(0xFF151515)))
+        else -> classicCardColor().let { Brush.verticalGradient(listOf(it, it)) }
     }
     val textColor = if (style == STYLE_ITUNES) Color(0xFF111111) else Color.White
     val subColor = if (style == STYLE_ITUNES) Color(0xFF333333) else Color.White.copy(.7f)
@@ -506,7 +541,7 @@ fun MiniPlayer(vm: PlayerViewModel, onOpen: () -> Unit) {
         ) {
             Box(
                 Modifier.size(40.dp)
-                    .clip(RoundedCornerShape(if (style == STYLE_CLASSIC) 12.dp else 4.dp))
+                    .clip(coverShape(RoundedCornerShape(if (style == STYLE_CLASSIC) 12.dp else 4.dp), 40f))
                     .background(Color(0xFF222222))
             ) {
                 art?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
@@ -578,9 +613,19 @@ fun DrawerContent(vm: PlayerViewModel, onGo: (Route) -> Unit) {
     val nFolders = remember(all) { all.map { it.folder }.distinct().size }
 
     Column(Modifier.fillMaxHeight()) {
-        Box(Modifier.fillMaxWidth().background(headerBrush).statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Text("Personal Music Player", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        val photo by vm.profile.photo.collectAsState(initial = null)
+        val alias by vm.profile.name.collectAsState(initial = "")
+        Row(Modifier.fillMaxWidth().background(headerBrush).statusBarsPadding()
+            .clickable { onGo(Route("profile")) }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Avatar(photo, 52)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(alias.ifBlank { "Personal Music Player" }, color = Color.White, fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("Mi cuenta", color = Color.White.copy(.65f), fontSize = 12.sp)
+            }
         }
         LazyColumn(Modifier.fillMaxSize().navigationBarsPadding()) {
             item { DrawerItem(Icons.Default.MusicNote, "Canciones", lib.size, accent = accent) { onGo(Route("songs")) } }
@@ -618,7 +663,7 @@ fun DrawerContent(vm: PlayerViewModel, onGo: (Route) -> Unit) {
             }
             item { HorizontalDivider(Modifier.padding(vertical = 6.dp), color = Color.White.copy(.12f)) }
             item { DrawerItem(Icons.Default.Settings, "Configuración", accent = accent) { onGo(Route("settings")) } }
-            item { DrawerItem(Icons.Default.Person, "Perfil", accent = accent) { onGo(Route("profile")) } }
+            item { DrawerItem(Icons.Default.Person, "Mi cuenta", accent = accent) { onGo(Route("profile")) } }
             item { Spacer(Modifier.height(24.dp)) }
         }
     }
@@ -653,18 +698,16 @@ fun StyleScreenBackground(modifier: Modifier = Modifier, content: @Composable Bo
             content()
         }
         STYLE_ITUNES -> Box(modifier.background(Color.Black), content = content)
-        else -> Box(
-            modifier.background(
-                Brush.verticalGradient(
-                    listOf(
-                        accent.copy(alpha = 0.20f),   // ⭐ tinte sutil del álbum
-                        ClassicBgTop,
-                        ClassicBgBottom
-                    )
-                )
-            ),
-            content = content
-        )
+        else -> {
+            val anim = animateColorAsState(accent, tween(700), label = "classicBg")
+            Box(
+                modifier.drawBehind {
+                    val a = anim.value
+                    drawRect(Brush.verticalGradient(listOf(a.copy(alpha = 0.60f), a.copy(alpha = 0.22f), ClassicBgBottom)))
+                },
+                content = content
+            )
+        }
     }
 }
 
@@ -684,8 +727,8 @@ fun StyleHeader(
                 .background(
                     Brush.verticalGradient(
                         listOf(
-                            accent.copy(alpha = 0.25f),
-                            Color.Black.copy(alpha = 0.6f)
+                            accent.copy(alpha = 0.55f),
+                            accent.copy(alpha = 0.18f)
                         )
                     )
                 )
@@ -889,7 +932,7 @@ private fun ClassicSongRow(
         Modifier.fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(Color(0xFF141418))
+            .background(classicCardColor())
             .combinedClickable(onClick = { vm.play(queue, index) }, onLongClick = { sheet = true })
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically

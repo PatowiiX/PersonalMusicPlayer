@@ -98,6 +98,8 @@ import androidx.compose.ui.geometry.Size as GSize
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -126,9 +128,9 @@ fun NowPlaying(vm: PlayerViewModel) {
     val song by vm.current.collectAsState()
     val playing by vm.isPlaying.collectAsState()
     val shuffle by vm.shuffle.collectAsState()
-    val pos by vm.position.collectAsState()
     val art by vm.art.collectAsState()
-    val accent by vm.accent.collectAsState()
+    // Acento efectivo (ya considera "negro total" en el tema Clásico)
+    val accent = LocalAccent.current
     val quality by vm.quality.collectAsState()
     val bt by vm.bluetooth.device.collectAsState()
     val mode by vm.vinylMode.collectAsState()
@@ -145,18 +147,6 @@ fun NowPlaying(vm: PlayerViewModel) {
     }.collectAsState(initial = false)
 
     val color by animateColorAsState(accent, tween(900), label = "accent")
-    var angle by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(playing) {
-        if (playing) {
-            var last = withFrameNanos { it }
-            while (true) {
-                val now = withFrameNanos { it }
-                angle = (angle + (now - last) / 1e9f * 60f) % 360f
-                last = now
-            }
-        }
-    }
-
     val accentColor = when (style) {
         STYLE_VISTA -> VistaAccent
         STYLE_CLASSIC -> Color.White
@@ -167,7 +157,8 @@ fun NowPlaying(vm: PlayerViewModel) {
         STYLE_VISTA -> Brush.verticalGradient(listOf(color.copy(alpha = .35f), Color(0xFF07101F)))
         STYLE_CLASSIC -> Brush.verticalGradient(
             listOf(
-                color.copy(alpha = 0.35f),
+                color.copy(alpha = 0.70f),
+                color.copy(alpha = 0.25f),
                 Color.Black
             )
         )
@@ -229,7 +220,7 @@ fun NowPlaying(vm: PlayerViewModel) {
                     }
                     DropdownMenu(expanded = dm, onDismissRequest = { dm = false }) {
                         DropdownMenuItem(
-                            text = { Text("Vinilo de fondo") },
+                            text = { Text("Vinilo giratorio") },
                             onClick = { vm.setVinyl(0); dm = false },
                             leadingIcon = if (mode == 0) ({ Icon(Icons.Default.Check, null) }) else null
                         )
@@ -362,39 +353,51 @@ fun NowPlaying(vm: PlayerViewModel) {
 
             Spacer(Modifier.height((6 * scale).dp))
 
-            // ── Portada ────────────────────────────────────────────
-            val coverShape = when (style) {
-                STYLE_XMB -> RoundedCornerShape(2.dp)
-                STYLE_VISTA -> RoundedCornerShape(8.dp)
-                STYLE_CLASSIC -> RoundedCornerShape(20.dp)
-                else -> RoundedCornerShape(8.dp)
-            }
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .size(coverSizeDp.dp)
-                    .shadow(if (style == STYLE_XMB) 8.dp else 24.dp, coverShape)
-                    .clip(coverShape)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                color.copy(alpha = 0.55f),
-                                color.copy(alpha = 0.20f)
+            // ── Portada / Vinilo ───────────────────────────────────
+            if (mode == 0) {
+                VinylDisc(
+                    art = art, accent = color, playing = playing,
+                    // luminosidad aproximada del fondo: el acento mezclado con negro (XMB es negro puro)
+                    darkBg = style == STYLE_XMB || color.luminance() * 0.5f < 0.18f,
+                    modifier = Modifier.align(Alignment.CenterHorizontally).size(coverSizeDp.dp)
+                )
+            } else {
+                val cShape = coverShape(
+                    when (style) {
+                        STYLE_XMB -> RoundedCornerShape(2.dp)
+                        STYLE_VISTA -> RoundedCornerShape(8.dp)
+                        STYLE_CLASSIC -> RoundedCornerShape(20.dp)
+                        else -> RoundedCornerShape(8.dp)
+                    }, coverSizeDp
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .size(coverSizeDp.dp)
+                        .shadow(if (style == STYLE_XMB) 8.dp else 24.dp, cShape)
+                        .clip(cShape)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    color.copy(alpha = 0.55f),
+                                    color.copy(alpha = 0.20f)
+                                )
                             )
                         )
-                    )
-                    .border(1.dp, Color.White.copy(alpha = 0.10f), coverShape)
-            ) {
-                val a = art
-                if (a != null) {
-                    Image(a.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                } else {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Default.Album, null,
-                            tint = Color.White.copy(.4f),
-                            modifier = Modifier.size((coverSizeDp * 0.5f).dp)
-                        )
+                        .border(1.dp, Color.White.copy(alpha = 0.10f), cShape)
+                ) {
+                    val a = art
+                    if (a != null) {
+                        val img = remember(a) { a.asImageBitmap() }
+                        Image(img, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    } else {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.Album, null,
+                                tint = Color.White.copy(.4f),
+                                modifier = Modifier.size((coverSizeDp * 0.5f).dp)
+                            )
+                        }
                     }
                 }
             }
@@ -954,6 +957,67 @@ fun VinylBackground(angle: Float, accent: Color, art: Bitmap?, modifier: Modifie
     }
 }
 
+/**
+ * Vinilo giratorio con la carátula del álbum en el centro (gira junto con el disco).
+ * La rotación se aplica en la capa gráfica: no recompone nada por frame.
+ * El color del disco se ajusta al fondo para que siempre contraste (disco claro sobre fondo oscuro y viceversa).
+ */
+@Composable
+fun VinylDisc(art: Bitmap?, accent: Color, playing: Boolean, darkBg: Boolean, modifier: Modifier = Modifier) {
+    val angle = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(playing) {
+        if (!playing) return@LaunchedEffect
+        var last = withFrameNanos { it }
+        while (true) {
+            val now = withFrameNanos { it }
+            angle.floatValue = (angle.floatValue + (now - last) / 1e9f * 90f) % 360f
+            last = now
+        }
+    }
+    val body = if (darkBg) Color(0xFF2B2B2E) else Color(0xFF0A0A0A)
+    val groove = if (darkBg) Color.White.copy(.10f) else Color.White.copy(.13f)
+    val rim = if (darkBg) Color.White.copy(.65f) else Color.White.copy(.35f)
+    val img = remember(art) { art?.asImageBitmap() }
+
+    Box(modifier.shadow(20.dp, CircleShape)) {
+        Box(Modifier.fillMaxSize().graphicsLayer { rotationZ = angle.floatValue }) {
+            Canvas(Modifier.fillMaxSize()) {
+                val c = center
+                val r = size.minDimension / 2f
+                drawCircle(body, r, c)
+                var rr = r * 0.96f
+                while (rr > r * 0.42f) {
+                    drawCircle(groove, rr, c, style = Stroke(1.1f))
+                    rr -= r * 0.035f
+                }
+                // marcas de brillo en el surco (giran con el disco)
+                drawCircle(
+                    Brush.sweepGradient(
+                        listOf(Color.Transparent, Color.White.copy(.16f), Color.Transparent, Color.White.copy(.16f), Color.Transparent), c
+                    ), r * 0.96f, c
+                )
+            }
+            // Etiqueta central: la carátula del álbum
+            Box(
+                Modifier.align(Alignment.Center).fillMaxSize(0.40f).clip(CircleShape)
+                    .background(accent)
+                    .border(2.dp, Color.Black.copy(.6f), CircleShape)
+            ) {
+                if (img != null) Image(img, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                else Icon(Icons.Default.Album, null, tint = Color.White.copy(.6f), modifier = Modifier.align(Alignment.Center).fillMaxSize(0.5f))
+            }
+        }
+        // Capa fija: borde de contraste, reflejo y agujero central
+        Canvas(Modifier.fillMaxSize()) {
+            val c = center
+            val r = size.minDimension / 2f
+            drawCircle(rim, r - 1.5f, c, style = Stroke(3f))
+            drawCircle(Color.Black, r * 0.035f, c)
+            drawCircle(Color.White.copy(.5f), r * 0.035f, c, style = Stroke(1.5f))
+        }
+    }
+}
+
 // ------------------------------------------------------------ Sleep timer
 @Composable
 fun SleepTimerDialog(
@@ -1445,13 +1509,19 @@ fun Stats(vm: PlayerViewModel) {
 }
 
 // ------------------------------------------------------------ Perfil
+private object AvatarCache {
+    private val cache = android.util.LruCache<String, Bitmap>(6 * 1024 * 1024)
+    fun get(k: String): Bitmap? = cache.get(k)
+    fun put(k: String, b: Bitmap) { cache.put(k, b) }
+}
+
 @Composable
 fun Avatar(path: String?, size: Int) {
-    val bmp by produceState<Bitmap?>(null, path) {
+    val bmp by produceState<Bitmap?>(path?.let { AvatarCache.get(it) }, path) {
         value = path?.let { p ->
-            withContext(Dispatchers.IO) {
+            AvatarCache.get(p) ?: withContext(Dispatchers.IO) {
                 BitmapFactory.decodeFile(p, BitmapFactory.Options().apply { inSampleSize = 2 })
-            }
+            }?.also { AvatarCache.put(p, it) }
         }
     }
     Box(
