@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Personal Music Player</string>
+    <string name="widget_desc">Controla tu música desde la pantalla principal</string>
+</resources>
