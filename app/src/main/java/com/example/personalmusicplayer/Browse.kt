@@ -83,11 +83,20 @@ fun BrowseHost(vm: PlayerViewModel, nav: Nav, onMenu: () -> Unit) {
             StyleScreenBackground(Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize().statusBarsPadding()) {
                     StyleHeader(vm, nav, "Mi cuenta", null, onMenu, search = false)
-                    AccountScreen(vm)
+                    AccountScreen(vm, nav)
                 }
             }
         }
         "history" -> HistoryScreen(vm, nav, onMenu)
+        "accountstats" -> {
+            // Estadísticas dentro de Mi cuenta
+            StyleScreenBackground(Modifier.fillMaxSize()) {
+                Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                    StyleHeader(vm, nav, "Estadísticas", null, onMenu, search = false)
+                    Stats(vm)
+                }
+            }
+        }
         "search" -> SearchScreen(vm, nav, onMenu, lib)
         "album" -> AlbumDetail(vm, nav, onMenu, lib.filter { it.albumId.toString() == r.value })
         "artist" -> ArtistDetail(vm, nav, onMenu, r.value, lib.filter { it.artist == r.value })

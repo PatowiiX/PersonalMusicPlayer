@@ -1501,7 +1501,7 @@ fun Stats(vm: PlayerViewModel) {
         }
         item {
             BarCard(
-                "Canciones más pedidas", Icons.Default.MusicNote,
+                "Canciones más escuchadas", Icons.Default.MusicNote,
                 songs.map { "${it.title} — ${it.artist}" to it.plays.toFloat() }
             ) { "${it.toInt()}×" }
         }

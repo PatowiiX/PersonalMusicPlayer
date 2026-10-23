@@ -80,6 +80,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val vinylMode = profile.vinylMode.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
     val coverShape = profile.coverShape.stateIn(viewModelScope, SharingStarted.Eagerly, "auto")
     val colorMode = profile.colorMode.stateIn(viewModelScope, SharingStarted.Eagerly, "dynamic")
+    val statsInDock = profile.statsInDock.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val library: StateFlow<List<Song>> = combine(allSongs, excluded) { all, ex -> all.filter { it.folder !in ex } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -312,6 +313,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun setVinyl(i: Int) { viewModelScope.launch { profile.saveVinyl(i) } }
     fun setCoverShape(s: String) { viewModelScope.launch { profile.saveCoverShape(s) } }
     fun setColorMode(s: String) { viewModelScope.launch { profile.saveColorMode(s) } }
+    fun setStatsInDock(b: Boolean) { viewModelScope.launch { profile.saveStatsInDock(b) } }
     fun saveAlias(n: String) { viewModelScope.launch { profile.saveName(n) } }
     fun savePhoto(uri: android.net.Uri) { viewModelScope.launch { profile.savePhoto(uri) } }
     fun removePhoto() { viewModelScope.launch { profile.removePhoto() } }

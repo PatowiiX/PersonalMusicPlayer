@@ -238,7 +238,12 @@ class Nav(private val goStats: () -> Unit) {
     val stack = mutableStateListOf(Route("songs"))
     val listStates = mutableMapOf<String, LazyListState>()
     val current: Route get() = stack.last()
-    fun push(r: Route) { if (r.type == "stats") goStats() else stack.add(r) }
+    /** Si Estadísticas está en la barra inferior se va a su pestaña; si no, se abre dentro de Mi cuenta. */
+    var statsInDock = false
+    fun push(r: Route) {
+        if (r.type == "stats") { if (statsInDock) goStats() else stack.add(Route("accountstats")) }
+        else stack.add(r)
+    }
     fun back(): Boolean { if (stack.size > 1) { stack.removeAt(stack.lastIndex); return true }; return false }
     fun reset(r: Route) { stack.clear(); stack.add(r) }
     fun listState(key: String): LazyListState = listStates.getOrPut(key) { LazyListState() }
@@ -296,9 +301,17 @@ fun Welcome(vm: PlayerViewModel, name: String, onDone: () -> Unit) {
 @Composable
 fun MainScaffold(vm: PlayerViewModel) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
-    val pager = rememberPagerState(initialPage = 2, pageCount = { 3 })
+    val hasStatsState = vm.statsInDock.collectAsState()
+    val hasStats = hasStatsState.value
+    // Páginas: [Estadísticas (opcional)] · Reproduciendo · Biblioteca
+    val pNow = if (hasStats) 1 else 0
+    val pBrowse = pNow + 1
+    val pager = rememberPagerState(initialPage = pBrowse, pageCount = { if (hasStatsState.value) 3 else 2 })
     val scope = rememberCoroutineScope()
     val nav = remember { Nav { scope.launch { pager.animateScrollToPage(0) } } }
+    nav.statsInDock = hasStats
+    // Al activar/desactivar la pestaña, se mantiene al usuario en la Biblioteca (el índice de página cambia)
+    LaunchedEffect(hasStats) { pager.scrollToPage(pBrowse) }
     val req by vm.requestPlayerTab.collectAsState()
     val current by vm.current.collectAsState()
     val style by vm.uiStyle.collectAsState()
@@ -332,10 +345,10 @@ fun MainScaffold(vm: PlayerViewModel) {
         val c = nav.current
         vm.saveLastRoute(c.type, c.value)
     }
-    LaunchedEffect(req) { if (req) { pager.animateScrollToPage(1); vm.requestPlayerTab.value = false } }
+    LaunchedEffect(req) { if (req) { pager.animateScrollToPage(pNow); vm.requestPlayerTab.value = false } }
 
     BackHandler(drawer.isOpen) { scope.launch { drawer.close() } }
-    BackHandler(!drawer.isOpen && pager.currentPage == 2 && nav.stack.size > 1) { nav.back() }
+    BackHandler(!drawer.isOpen && pager.currentPage == pBrowse && nav.stack.size > 1) { nav.back() }
 
     val bgMod = Modifier.fillMaxSize()
     val isVista = style == STYLE_VISTA
@@ -369,8 +382,11 @@ fun MainScaffold(vm: PlayerViewModel) {
                         modifier = Modifier.width(300.dp)
                     ) { DrawerContent(vm) { r ->
                         scope.launch {
-                            if (r.type == "stats") { pager.scrollToPage(0) }
-                            else { nav.reset(styleRoot); if (r != styleRoot) nav.push(r); pager.scrollToPage(2) }
+                            if (r.type == "stats" && hasStats) { pager.scrollToPage(0) }
+                            else if (r.type == "stats") {
+                                nav.reset(styleRoot); nav.push(Route("profile")); nav.push(r); pager.scrollToPage(pBrowse)
+                            }
+                            else { nav.reset(styleRoot); if (r != styleRoot) nav.push(r); pager.scrollToPage(pBrowse) }
                             drawer.close()
                         }
                     } }
@@ -381,13 +397,15 @@ fun MainScaffold(vm: PlayerViewModel) {
                     contentWindowInsets = WindowInsets(0, 0, 0, 0),
                     bottomBar = {
                         Column {
-                            if (pager.currentPage != 1 && current != null) MiniPlayer(vm) { scope.launch { pager.animateScrollToPage(1) } }
-                            StyleDock(style, pager.currentPage) { i ->
+                            if (pager.currentPage != pNow && current != null) MiniPlayer(vm) { scope.launch { pager.animateScrollToPage(pNow) } }
+                            // Índices lógicos del dock: 0 = Estadísticas, 1 = Reproduciendo, 2 = Biblioteca
+                            val dockSel = when (pager.currentPage) { pNow -> 1; pBrowse -> 2; else -> 0 }
+                            StyleDock(style, dockSel, hasStats) { i ->
                                 scope.launch {
                                     when (i) {
                                         0 -> pager.animateScrollToPage(0)
-                                        1 -> pager.animateScrollToPage(1)
-                                        else -> pager.animateScrollToPage(2)
+                                        1 -> pager.animateScrollToPage(pNow)
+                                        else -> pager.animateScrollToPage(pBrowse)
                                     }
                                 }
                             }
@@ -398,9 +416,9 @@ fun MainScaffold(vm: PlayerViewModel) {
                         state = pager,
                         modifier = Modifier.fillMaxSize().padding(bottom = pad.calculateBottomPadding())
                     ) { page ->
-                        when (page) {
-                            0 -> StatsPage(vm)
-                            1 -> NowPlaying(vm)
+                        when {
+                            hasStats && page == 0 -> StatsPage(vm)
+                            page == pNow -> NowPlaying(vm)
                             else -> XmbStyledBrowse(vm, nav) { scope.launch { drawer.open() } }
                         }
                     }
@@ -437,17 +455,16 @@ private fun XmbStyledBrowse(vm: PlayerViewModel, nav: Nav, onMenu: () -> Unit) {
 
 // ------------------------------------------------------------ Dock
 @Composable
-private fun StyleDock(style: String, selected: Int, onClick: (Int) -> Unit) {
+private fun StyleDock(style: String, selected: Int, showStats: Boolean, onClick: (Int) -> Unit) {
     when (style) {
         STYLE_CLASSIC -> {
             Row(
                 Modifier.fillMaxWidth().background(color = Color.Black)
-                    .border(width = 1.dp, color = LocalAccent.current.let { if (it == Color.Black) Color.White.copy(alpha = 0.08f) else it.copy(alpha = 0.45f) })
                     .navigationBarsPadding().padding(vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                ClassicDockItem(Icons.Default.BarChart, "Estadísticas", selected == 0) { onClick(0) }
+                if (showStats) ClassicDockItem(Icons.Default.BarChart, "Estadísticas", selected == 0) { onClick(0) }
                 ClassicDockItem(Icons.Default.PlayCircleFilled, "Reproduciendo", selected == 1) { onClick(1) }
                 ClassicDockItem(Icons.Default.LibraryMusic, "Biblioteca", selected == 2) { onClick(2) }
             }
@@ -464,7 +481,7 @@ private fun StyleDock(style: String, selected: Int, onClick: (Int) -> Unit) {
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                DockItem(Icons.Default.BarChart, "Estadísticas", selected == 0, Color.White) { onClick(0) }
+                if (showStats) DockItem(Icons.Default.BarChart, "Estadísticas", selected == 0, Color.White) { onClick(0) }
                 DockItem(Icons.Default.PlayCircleFilled, "Reproduciendo", selected == 1, Color.White) { onClick(1) }
                 DockItem(Icons.Default.LibraryMusic, "Biblioteca", selected == 2, Color.White) { onClick(2) }
             }
