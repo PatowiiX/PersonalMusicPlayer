@@ -36,6 +36,7 @@ class ProfileStore(private val ctx: Context) {
     private val COVER = stringPreferencesKey("cover_shape")
     private val COLOR = stringPreferencesKey("color_mode")
     private val STATS_DOCK = booleanPreferencesKey("stats_in_dock")
+    private val QUEUE = stringPreferencesKey("last_queue")
 
     val name: Flow<String> = ctx.ds.data.map { it[NAME] ?: "" }
     val photo: Flow<String?> = ctx.ds.data.map { it[PHOTO] }
@@ -55,6 +56,10 @@ class ProfileStore(private val ctx: Context) {
     val colorMode: Flow<String> = ctx.ds.data.map { it[COLOR] ?: "dynamic" }
     /** true = Estadísticas aparece como pestaña en la barra inferior (por defecto va dentro de Mi cuenta). */
     val statsInDock: Flow<Boolean> = ctx.ds.data.map { it[STATS_DOCK] ?: false }
+    /** Cola (ids en orden) con la que se estaba reproduciendo, para poder seguir desde ahí al reabrir la app. */
+    val lastQueue: Flow<List<Long>> = ctx.ds.data.map { p ->
+        (p[QUEUE] ?: "").split(',').mapNotNull { it.toLongOrNull() }
+    }
     val favorites: Flow<Set<Long>> = ctx.ds.data.map { p -> (p[FAV] ?: emptySet()).mapNotNull { it.toLongOrNull() }.toSet() }
 
     suspend fun saveName(n: String) { ctx.ds.edit { it[NAME] = n.trim() } }
@@ -62,6 +67,7 @@ class ProfileStore(private val ctx: Context) {
     suspend fun saveStyle(s: String) { ctx.ds.edit { it[STYLE] = s } }
     suspend fun saveCoverShape(s: String) { ctx.ds.edit { it[COVER] = s } }
     suspend fun saveColorMode(s: String) { ctx.ds.edit { it[COLOR] = s } }
+    suspend fun saveQueue(ids: List<Long>) { ctx.ds.edit { it[QUEUE] = ids.joinToString(",") } }
     suspend fun saveStatsInDock(b: Boolean) { ctx.ds.edit { it[STATS_DOCK] = b } }
     suspend fun saveShuffle(b: Boolean) { ctx.ds.edit { it[SHUF] = b } }
     suspend fun saveLastRoute(type: String, value: String) {

@@ -107,6 +107,8 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
@@ -353,27 +355,32 @@ fun NowPlaying(vm: PlayerViewModel) {
 
             Spacer(Modifier.height((6 * scale).dp))
 
-            // ── Portada / Vinilo ───────────────────────────────────
-            if (mode == 0) {
-                VinylDisc(
-                    art = art, accent = color, playing = playing,
-                    // luminosidad aproximada del fondo: el acento mezclado con negro (XMB es negro puro)
-                    darkBg = style == STYLE_XMB || color.luminance() * 0.5f < 0.18f,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).size(coverSizeDp.dp)
-                )
-            } else {
+            // ── Portada (con el vinilo girando DETRÁS, sin reemplazarla ni achicarla) ──
+            Box(Modifier.align(Alignment.CenterHorizontally).size(coverSizeDp.dp).zIndex(-1f)) {
+                if (mode == 0) {
+                    // El disco es más grande que la carátula y asoma por todos lados; zIndex lo deja detrás del resto.
+                    VinylDisc(
+                        art = art, accent = color, playing = playing,
+                        // Fondo negro puro (elegido por el usuario o XMB): disco negro con contorno blanco
+                        pureBlack = style == STYLE_XMB || accent == Color.Black,
+                        // luminosidad aproximada del fondo: el acento mezclado con negro
+                        darkBg = style == STYLE_XMB || color.luminance() * 0.5f < 0.18f,
+                        modifier = Modifier.align(Alignment.Center).requiredSize(minOf(coverSizeDp * 1.32f, maxW).dp)
+                    )
+                }
+                val coverDp = coverSizeDp
                 val cShape = coverShape(
                     when (style) {
                         STYLE_XMB -> RoundedCornerShape(2.dp)
                         STYLE_VISTA -> RoundedCornerShape(8.dp)
                         STYLE_CLASSIC -> RoundedCornerShape(20.dp)
                         else -> RoundedCornerShape(8.dp)
-                    }, coverSizeDp
+                    }, coverDp
                 )
                 Box(
                     modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .size(coverSizeDp.dp)
+                        .align(Alignment.Center)
+                        .size(coverDp.dp)
                         .shadow(if (style == STYLE_XMB) 8.dp else 24.dp, cShape)
                         .clip(cShape)
                         .background(
@@ -395,7 +402,7 @@ fun NowPlaying(vm: PlayerViewModel) {
                             Icon(
                                 Icons.Default.Album, null,
                                 tint = Color.White.copy(.4f),
-                                modifier = Modifier.size((coverSizeDp * 0.5f).dp)
+                                modifier = Modifier.size((coverDp * 0.5f).dp)
                             )
                         }
                     }
@@ -630,7 +637,8 @@ private fun ProgressSliderRow(vm: PlayerViewModel, style: String, durationMs: Lo
     ThemedSlider(
         progress = (pos.toFloat() / durationMs.coerceAtLeast(1)).coerceIn(0f, 1f),
         style = style,
-        onSeek = { vm.seekTo((it * durationMs).toLong()) }
+        onScrub = { vm.scrub((it * durationMs).toLong()) },      // mientras arrastra: solo vista previa
+        onSeek = { vm.seekTo((it * durationMs).toLong()) }        // al soltar: mueve el audio
     )
 }
 
@@ -644,51 +652,67 @@ private fun ProgressTimeLabels(vm: PlayerViewModel, durationMs: Long, color: Col
 }
 
 // ------------------------------------------------------------ Slider responsivo
+/**
+ * Margen lateral (px) de la pista. DEBE coincidir con el `inset` que usa cada drawXSlider: antes el gesto
+ * lo calculaba en dp y el dibujo en px, y por eso el toque caía desfasado respecto a la barra.
+ */
+private fun sliderInsetPx(style: String) = when (style) {
+    STYLE_ITUNES -> 14f
+    STYLE_VISTA -> 18f
+    else -> 16f   // Clásico y XMB
+}
+
+/**
+ * [onScrub] (opcional): si se da, mientras se arrastra solo se llama a [onScrub] y [onSeek] se llama una vez al soltar.
+ * Si no se da, [onSeek] se llama de forma continua (p. ej. el control de volumen).
+ */
 @Composable
 fun ThemedSlider(
     progress: Float,
     style: String,
     modifier: Modifier = Modifier,
+    onScrub: ((Float) -> Unit)? = null,
     onSeek: (Float) -> Unit
 ) {
-    var barWidthPx by remember { mutableFloatStateOf(1f) }
+    var drag by remember { mutableStateOf<Float?>(null) }
     val height = when (style) {
         STYLE_ITUNES -> 36.dp
         STYLE_VISTA -> 44.dp
-        STYLE_CLASSIC -> 40.dp
-        STYLE_XMB -> 40.dp
         else -> 40.dp
     }
-    val thumbInsetDp = when (style) {
-        STYLE_VISTA -> 18.dp
-        STYLE_CLASSIC -> 16.dp
-        STYLE_XMB -> 16.dp
-        else -> 14.dp
-    }
+    val seek by rememberUpdatedState(onSeek)
+    val scrub by rememberUpdatedState(onScrub)
+    // Mientras se arrastra se muestra el dedo, no la posición del reproductor (evita saltos)
+    val shown = drag ?: progress
 
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(height)
-            .onSizeChanged { barWidthPx = it.width.toFloat().coerceAtLeast(1f) }
             .pointerInput(style) {
-                val inset = thumbInsetDp.toPx()
+                val inset = sliderInsetPx(style)
                 val trackW = (size.width - 2 * inset).coerceAtLeast(1f)
-
                 fun frac(x: Float) = ((x - inset) / trackW).coerceIn(0f, 1f)
 
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    onSeek(frac(down.position.x))
+                    var f = frac(down.position.x)
                     down.consume()
-                    val pointerId = down.id
+                    drag = f
+                    val sc = scrub
+                    if (sc != null) sc(f) else seek(f)
                     while (true) {
                         val ev = awaitPointerEvent()
-                        val ch = ev.changes.firstOrNull { it.id == pointerId } ?: break
+                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
                         if (!ch.pressed) break
-                        onSeek(frac(ch.position.x))
+                        f = frac(ch.position.x)
+                        drag = f
+                        val s2 = scrub
+                        if (s2 != null) s2(f) else seek(f)
                         ch.consume()
                     }
+                    if (scrub != null) seek(f)
+                    drag = null
                 }
             },
         contentAlignment = Alignment.CenterStart
@@ -697,10 +721,10 @@ fun ThemedSlider(
             val w = size.width
             val cy = size.height / 2f
             when (style) {
-                STYLE_ITUNES -> drawITunesSlider(w, cy, progress)
-                STYLE_VISTA -> drawVistaSlider(w, cy, progress)
-                STYLE_CLASSIC -> drawClassicSlider(w, cy, progress)
-                else -> drawXmbSlider(w, cy, progress)
+                STYLE_ITUNES -> drawITunesSlider(w, cy, shown)
+                STYLE_VISTA -> drawVistaSlider(w, cy, shown)
+                STYLE_CLASSIC -> drawClassicSlider(w, cy, shown)
+                else -> drawXmbSlider(w, cy, shown)
             }
         }
     }
@@ -909,7 +933,7 @@ private fun DrawScope.drawXmbSlider(w: Float, cy: Float, progress: Float) {
 @Composable
 fun StyleSlider(progress: Float, accent: Color, modifier: Modifier = Modifier, onSeek: (Float) -> Unit) {
     val style = LocalStyle.current
-    ThemedSlider(progress, style, modifier, onSeek)
+    ThemedSlider(progress, style, modifier, onSeek = onSeek)
 }
 
 @Composable
@@ -963,7 +987,7 @@ fun VinylBackground(angle: Float, accent: Color, art: Bitmap?, modifier: Modifie
  * El color del disco se ajusta al fondo para que siempre contraste (disco claro sobre fondo oscuro y viceversa).
  */
 @Composable
-fun VinylDisc(art: Bitmap?, accent: Color, playing: Boolean, darkBg: Boolean, modifier: Modifier = Modifier) {
+fun VinylDisc(art: Bitmap?, accent: Color, playing: Boolean, darkBg: Boolean, pureBlack: Boolean = false, modifier: Modifier = Modifier) {
     val angle = remember { mutableFloatStateOf(0f) }
     LaunchedEffect(playing) {
         if (!playing) return@LaunchedEffect
@@ -974,9 +998,10 @@ fun VinylDisc(art: Bitmap?, accent: Color, playing: Boolean, darkBg: Boolean, mo
             last = now
         }
     }
-    val body = if (darkBg) Color(0xFF2B2B2E) else Color(0xFF0A0A0A)
-    val groove = if (darkBg) Color.White.copy(.10f) else Color.White.copy(.13f)
-    val rim = if (darkBg) Color.White.copy(.65f) else Color.White.copy(.35f)
+    val body = when { pureBlack -> Color.Black; darkBg -> Color(0xFF2B2B2E); else -> Color(0xFF0A0A0A) }
+    val groove = when { pureBlack -> Color.White.copy(.28f); darkBg -> Color.White.copy(.10f); else -> Color.White.copy(.13f) }
+    val rim = when { pureBlack -> Color.White; darkBg -> Color.White.copy(.65f); else -> Color.White.copy(.35f) }
+    val rimWidth = if (pureBlack) 6f else 3f
     val img = remember(art) { art?.asImageBitmap() }
 
     Box(modifier.shadow(20.dp, CircleShape)) {
@@ -1001,7 +1026,7 @@ fun VinylDisc(art: Bitmap?, accent: Color, playing: Boolean, darkBg: Boolean, mo
             Box(
                 Modifier.align(Alignment.Center).fillMaxSize(0.40f).clip(CircleShape)
                     .background(accent)
-                    .border(2.dp, Color.Black.copy(.6f), CircleShape)
+                    .border(2.dp, if (pureBlack) Color.White else Color.Black.copy(.6f), CircleShape)
             ) {
                 if (img != null) Image(img, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 else Icon(Icons.Default.Album, null, tint = Color.White.copy(.6f), modifier = Modifier.align(Alignment.Center).fillMaxSize(0.5f))
@@ -1011,7 +1036,7 @@ fun VinylDisc(art: Bitmap?, accent: Color, playing: Boolean, darkBg: Boolean, mo
         Canvas(Modifier.fillMaxSize()) {
             val c = center
             val r = size.minDimension / 2f
-            drawCircle(rim, r - 1.5f, c, style = Stroke(3f))
+            drawCircle(rim, r - rimWidth / 2f, c, style = Stroke(rimWidth))
             drawCircle(Color.Black, r * 0.035f, c)
             drawCircle(Color.White.copy(.5f), r * 0.035f, c, style = Stroke(1.5f))
         }
@@ -1501,7 +1526,7 @@ fun Stats(vm: PlayerViewModel) {
         }
         item {
             BarCard(
-                "Canciones más escuchadas", Icons.Default.MusicNote,
+                "Canciones más pedidas", Icons.Default.MusicNote,
                 songs.map { "${it.title} — ${it.artist}" to it.plays.toFloat() }
             ) { "${it.toInt()}×" }
         }

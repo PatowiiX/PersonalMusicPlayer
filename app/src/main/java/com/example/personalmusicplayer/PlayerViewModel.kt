@@ -142,6 +142,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private var byId = mapOf<Long, Song>()
     private var pendingMs = 0L
     private var restored = false
+    /** true mientras el usuario arrastra una barra de progreso: el sondeo no debe pisar su posición. */
+    @Volatile var scrubbing = false
     private var ffJob: Job? = null
     private var playJob: Job? = null
     private var artJob: Job? = null
@@ -167,7 +169,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             if (state == Player.STATE_READY) controller?.duration?.takeIf { it > 0 }?.let { duration.value = it }
         }
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-            if (ffJob?.isActive != true) position.value = newPosition.positionMs
+            if (ffJob?.isActive != true && !scrubbing) position.value = newPosition.positionMs
         }
     }
 
@@ -200,7 +202,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     val now = SystemClock.elapsedRealtime()
                     val dt = now - last
                     last = now
-                    if (ffJob?.isActive != true) position.value = c.currentPosition
+                    if (ffJob?.isActive != true && !scrubbing) position.value = c.currentPosition
                     c.duration.takeIf { it > 0 }?.let { if (duration.value != it) duration.value = it }
                     pendingMs += dt
                     if (pendingMs >= 10_000) flushTime()
@@ -237,9 +239,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             val c = controller ?: return@launch
             if (c.currentMediaItem != null) return@launch    // ya hay algo cargado
             val s = byId[id] ?: return@launch
+            // Recupera la cola con la que se estaba escuchando (si no existe, toda la biblioteca),
+            // para que siguiente/anterior funcionen desde la canción en que se quedó.
+            val saved = profile.lastQueue.first()
+            val (queue, idx, items) = withContext(Dispatchers.Default) {
+                var q = saved.mapNotNull { byId[it] }
+                if (q.none { it.id == s.id }) q = byId.values.toList()
+                val i = q.indexOfFirst { it.id == s.id }.coerceAtLeast(0)
+                Triple(q, i, q.map { mediaItemOf(it) })
+            }
+            if (c.currentMediaItem != null || queue.isEmpty()) return@launch  // el usuario ya puso otra
             // Carga sin reproducir, en la posición guardada
             val start = pos.coerceAtLeast(0L)
-            c.setMediaItem(mediaItemOf(s), start)
+            c.setMediaItems(items, idx, start)
             c.prepare()
             current.value = s
             position.value = start
@@ -262,13 +274,17 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             val items = withContext(Dispatchers.Default) { list.map { mediaItemOf(it) } }
             c.setMediaItems(items, start, 0)
             c.prepare(); c.play()
+            // Se guarda la cola para poder continuar desde aquí al reabrir la app (listas enormes: se usa la biblioteca)
+            withContext(Dispatchers.IO) { profile.saveQueue(if (list.size <= 6000) list.map { it.id } else emptyList()) }
         }
     }
     fun playShuffled(list: List<Song>) { if (list.isNotEmpty()) play(list, Random.nextInt(list.size), true) }
     fun toggle() { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
     fun next() { stopFastForward(); controller?.seekToNextMediaItem() }
     fun prev() { stopFastForward(); controller?.seekToPreviousMediaItem() }
-    fun seekTo(ms: Long) { controller?.seekTo(ms); position.value = ms }
+    /** Vista previa mientras se arrastra (no mueve el audio hasta soltar). */
+    fun scrub(ms: Long) { scrubbing = true; position.value = ms }
+    fun seekTo(ms: Long) { controller?.seekTo(ms); position.value = ms; scrubbing = false }
 
     /**
      * Mantener presionado "siguiente": avanza dentro de la canción y va acelerando.

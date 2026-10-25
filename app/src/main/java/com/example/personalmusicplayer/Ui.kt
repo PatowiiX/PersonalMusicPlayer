@@ -22,6 +22,9 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -518,7 +521,6 @@ fun MiniPlayer(vm: PlayerViewModel, onOpen: () -> Unit) {
     val song by vm.current.collectAsState()
     val art by vm.art.collectAsState()
     val playing by vm.isPlaying.collectAsState()
-    val pos by vm.position.collectAsState()
     val s = song ?: return
     val style = LocalStyle.current
 
@@ -569,11 +571,7 @@ fun MiniPlayer(vm: PlayerViewModel, onOpen: () -> Unit) {
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text("${s.artist} — ${s.album}", color = subColor, fontSize = 10.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                LinearProgressIndicator(
-                    progress = { (pos.toFloat() / s.durationMs.coerceAtLeast(1)).coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp).height(3.dp),
-                    color = accent, trackColor = Color(0x33000000)
-                )
+                MiniSeekBar(vm, s.durationMs, accent, if (style == STYLE_ITUNES) Color(0x33000000) else Color.White.copy(.18f))
             }
             IconButton({ vm.prev() }, Modifier.size(30.dp)) {
                 Icon(Icons.Default.SkipPrevious, "Anterior", tint = textColor, modifier = Modifier.size(20.dp))
@@ -585,6 +583,48 @@ fun MiniPlayer(vm: PlayerViewModel, onOpen: () -> Unit) {
                 Icon(Icons.Default.SkipNext, "Siguiente", tint = textColor, modifier = Modifier.size(20.dp))
             }
         }
+    }
+}
+
+/** Barra de progreso del mini reproductor: toca o arrastra para mover la canción. */
+@Composable
+private fun MiniSeekBar(vm: PlayerViewModel, durationMs: Long, accent: Color, trackColor: Color) {
+    val posState = vm.position.collectAsState()
+    var drag by remember { mutableStateOf<Float?>(null) }
+    Canvas(
+        Modifier.fillMaxWidth().height(22.dp).pointerInput(durationMs) {
+            val inset = 6.dp.toPx()
+            fun frac(x: Float) = ((x - inset) / (size.width - 2 * inset).coerceAtLeast(1f)).coerceIn(0f, 1f)
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                var f = frac(down.position.x)
+                down.consume()
+                drag = f; vm.scrub((f * durationMs).toLong())
+                while (true) {
+                    val ev = awaitPointerEvent()
+                    val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!ch.pressed) break
+                    f = frac(ch.position.x)
+                    drag = f; vm.scrub((f * durationMs).toLong())
+                    ch.consume()
+                }
+                vm.seekTo((f * durationMs).toLong())
+                drag = null
+            }
+        }
+    ) {
+        // La posición se lee aquí (fase de dibujo): no recompone el mini reproductor 4 veces por segundo
+        val f = drag ?: (posState.value.toFloat() / durationMs.coerceAtLeast(1)).coerceIn(0f, 1f)
+        val inset = 6.dp.toPx()
+        val trackW = size.width - 2 * inset
+        val h = 3.dp.toPx()
+        val cy = size.height / 2f
+        val cr = androidx.compose.ui.geometry.CornerRadius(h / 2f)
+        drawRoundRect(trackColor, androidx.compose.ui.geometry.Offset(inset, cy - h / 2f),
+            androidx.compose.ui.geometry.Size(trackW, h), cr)
+        drawRoundRect(accent, androidx.compose.ui.geometry.Offset(inset, cy - h / 2f),
+            androidx.compose.ui.geometry.Size(trackW * f, h), cr)
+        drawCircle(accent, if (drag != null) 7.dp.toPx() else 4.5f.dp.toPx(), androidx.compose.ui.geometry.Offset(inset + trackW * f, cy))
     }
 }
 
